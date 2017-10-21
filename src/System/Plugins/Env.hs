@@ -40,13 +40,14 @@ module System.Plugins.Env (
         lookupMerged,
         addMerge,
         addPkgConf,
+        defaultPkgConf,
         union,
         addStaticPkg,
         isStaticPkg,
         grabDefaultPkgConf,
         readPackageConf,
-        lookupPkg
-
+        lookupPkg,
+        pkgManglingPrefix
    ) where
 
 #include "../../../config.h"
@@ -58,7 +59,7 @@ import Control.Monad            ( liftM )
 
 import Data.IORef               ( writeIORef, readIORef, newIORef, IORef() )
 import Data.Maybe               ( isJust, isNothing, fromMaybe )
-import Data.List                ( (\\), nub, )
+import Data.List                ( (\\), nub )
 
 import System.IO.Unsafe         ( unsafePerformIO )
 import System.Directory         ( doesFileExist )
@@ -70,6 +71,7 @@ import System.IO.Error          ( catch, ioError, isDoesNotExistError )
 import Control.Concurrent.MVar  ( MVar(), newMVar, withMVar )
 
 import Distribution.Package hiding (packageName
+                                   , installedUnitId
 #if MIN_VERSION_ghc(7,10,0)
                                    , installedPackageId
 #endif
@@ -89,6 +91,9 @@ import Distribution.Simple.GHC
 import Distribution.Simple.PackageIndex
 import Distribution.Simple.Program
 import Distribution.Verbosity
+
+import System.Environment
+import Data.List.Split
 
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -299,6 +304,15 @@ addPkgConf f = do
     ps <- readPackageConf f
     modifyPkgEnv env $ \ls -> return $ union ls ps
 
+-- | This function is required when running with stack.
+defaultPkgConf :: IO ()
+defaultPkgConf = do
+  paths <- lookupEnv "GHC_PACKAGE_PATH"
+  unsetEnv "GHC_PACKAGE_PATH"
+  case paths of
+    Nothing -> return ()
+    Just s -> mapM_ addPkgConf $ splitOn ":" s
+
 --
 -- | add a new FM for the package.conf to the list of existing ones; if a package occurs multiple
 -- times, pick the one with the higher version number as the default (e.g., important for base in
@@ -393,6 +407,17 @@ lookupPkg pn = go [] pn
         (f', g') <- liftM unzip $ mapM (go (nub $ seen ++ ps)) (ps \\ seen)
         return $ (nub $ (concat f') ++ f, if static then [] else nub $ (concat g') ++ g)
 
+-- This is the prefix of mangled symbols that come from this package.
+pkgManglingPrefix :: PackageName -> IO (Maybe String)
+-- base seems to be mangled differently!
+pkgManglingPrefix "base" = return $ Just "base"
+pkgManglingPrefix p = withPkgEnvs env $ \fms -> return (go fms p)
+    where
+        go [] _       = Nothing
+        go (fm:fms) q = case lookupFM fm q of
+            Nothing -> go fms q     -- look in other pkgs
+            Just pkg -> Just $ drop 2 $ getHSLibraryName $ installedUnitId pkg
+
 data LibrarySpec
    = DLL String         -- -lLib
    | DLLPath FilePath   -- -Lpath
@@ -445,9 +470,9 @@ lookupPkg' p = withPkgEnvs env $ \fms -> go fms p
                     ldOptsPaths = [ path | Just (DLLPath path) <- ldInput ]
                     dlls        = map mkSOName (extras ++ ldOptsLibs)
 #if defined(CYGWIN) || defined(__MINGW32__)
-                    libdirs = fix_topdir (libraryDirs pkg) ++ ldOptsPaths
+                    libdirs = fix_topdir (libraryDirs pkg) ++ ldOptsPaths ++ fix_topdir (libraryDynDirs pkg)
 #else
-                    libdirs = libraryDirs pkg ++ ldOptsPaths
+                    libdirs = libraryDirs pkg ++ ldOptsPaths ++ libraryDynDirs pkg
 #endif
                 -- If we're loading dynamic libs we need the cbits to appear before the
                 -- real packages.
@@ -513,7 +538,12 @@ lookupPkg' p = withPkgEnvs env $ \fms -> go fms p
                     dynamic <- findHSdlib dirs lib
                     case dynamic of
                         Just file -> return $ Right $ Dynamic file
-                        Nothing   -> return $ Left lib
+                        Nothing   -> do
+                            -- TODO Generate this suffix automatically. It's absurd we have to use the preprocessor.
+                            dynamicSuffix <- findHSdlib dirs (lib ++ "-ghc" ++ (reverse $ takeWhile (/= '-') $ reverse GHC_LIB_PATH))
+                            case dynamicSuffix of
+                                   Just file -> return $ Right $ Dynamic file
+                                   Nothing   -> return $ Left lib
 
         findDLL :: [FilePath] -> String -> IO (Either String FilePath)
         findDLL [] lib         = return (Left lib)

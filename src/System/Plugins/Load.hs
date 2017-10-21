@@ -468,10 +468,15 @@ loadFunction__ :: Maybe String
               -> String
               -> IO (Maybe a)
 loadFunction__ pkg m valsym
-   = do let symbol = prefixUnderscore++(maybe "" (\p -> encode p++"_") pkg)
-                     ++encode m++"_"++(encode valsym)++"_closure"
+   = do p <- case pkg of
+              Just p -> do
+                prefix <- pkgManglingPrefix p
+                return $ encode (maybe p id prefix)++"_"
+              Nothing -> return ""
+        let symbol = prefixUnderscore++p++encode m++"_"++(encode valsym)++"_closure"
 #if DEBUG
         putStrLn $ "Looking for <<"++symbol++">>"
+        initLinker
 #endif
         ptr@(Ptr addr) <- withCString symbol c_lookupSymbol
         if (ptr == nullPtr)
@@ -586,10 +591,15 @@ unloadObj (Module { path = p, kind = k, key = ky }) = case k of
 -- Load a .so type object file.
 --
 loadShared :: FilePath -> IO Module
-loadShared str = do
+loadShared str' = do
 #if DEBUG
-    putStrLn $ " shared: " ++ str
+    putStrLn $ " shared: " ++ str'
 #endif
+    let str = case str' of
+          -- TODO My GHC segfaults because libm.so is a linker script
+          "libm.so" -> "/lib/x86_64-linux-gnu/libm.so.6"
+          "libpthread.so" -> "/lib/x86_64-linux-gnu/libpthread.so.0"
+          x -> x
     maybe_errmsg <- withCString str $ \dll -> c_addDLL dll
     if maybe_errmsg == nullPtr
         then return (Module str (mkModid str) Shared undefined (Package (mkModid str)))
@@ -608,6 +618,7 @@ loadShared str = do
 --
 loadPackage :: String -> IO ()
 loadPackage p = do
+        initLinker
 #if DEBUG
         putStr (' ':p) >> hFlush stdout
 #endif
