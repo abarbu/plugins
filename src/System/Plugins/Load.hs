@@ -74,7 +74,9 @@ import BinIface
 import HscTypes
 
 import Module (moduleName, moduleNameString)
-#if MIN_VERSION_ghc(8,0,0)
+#if MIN_VERSION_ghc(8,2,0)
+import Module (installedUnitIdString)
+#elif MIN_VERSION_ghc(8,0,0)
 import Module (unitIdString)
 #elif MIN_VERSION_ghc(7,10,0)
 import Module (packageKeyString)
@@ -710,7 +712,9 @@ loadDepends obj incpaths = do
 
                 -- and find some packages to load, as well.
                 let ps = dep_pkgs ds
-#if MIN_VERSION_ghc(8,0,0)
+#if MIN_VERSION_ghc(8,2,0)
+                ps' <- filterM loaded . map installedUnitIdString . nub $ map fst ps
+#elif MIN_VERSION_ghc(8,0,0)
                 ps' <- filterM loaded . map unitIdString . nub $ map fst ps
 #elif MIN_VERSION_ghc(7,10,0)
                 ps' <- filterM loaded . map packageKeyString . nub $ map fst ps

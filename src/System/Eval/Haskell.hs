@@ -53,6 +53,9 @@ import Data.Typeable            ( Typeable )
 
 import Data.Either              ( )
 import Data.Map as Map
+#if MIN_VERSION_ghc(8,2,0)
+    hiding (take)
+#endif
 import Data.Char
 
 import System.IO                ( )
